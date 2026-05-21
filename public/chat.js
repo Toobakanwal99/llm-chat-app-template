@@ -1,5 +1,6 @@
 /**
  * LLM Chat App Frontend - ChatGPT Multi-Session Architecture
+ * Enhanced with Hyperlink Support
  */
 
 // DOM elements
@@ -47,7 +48,7 @@ function createNewSession() {
 			{ role: "assistant", content: DEFAULT_WELCOME }
 		]
 	};
-	chatSessions.unshift(newSession); // Push to the top of the history list
+	chatSessions.unshift(newSession);
 	currentSessionId = newId;
 	saveState();
 	renderCurrentChat();
@@ -65,7 +66,6 @@ function saveState() {
  * Renders the active conversation message history into the main window view
  */
 function renderCurrentChat() {
-	// Wipe out old message element layouts cleanly
 	const existingMsgs = chatMessages.querySelectorAll(".message");
 	existingMsgs.forEach(el => el.remove());
 
@@ -99,7 +99,6 @@ sendButton.addEventListener("click", sendMessage);
 // "New Chat" mimics GPT: Saves what you have, switches context cleanly
 newChatButton.addEventListener("click", () => {
 	const current = getCurrentSession();
-	// Only create a new session if the current one has actual user interactions
 	if (current && current.history.length <= 1) {
 		alert("You are already in a clean new chat window.");
 		return;
@@ -117,7 +116,6 @@ historyButton.addEventListener("click", () => {
 		chatSessions.forEach(session => {
 			const item = document.createElement("div");
 			item.className = "history-session-item";
-			// Grab the first user message as the title preview if it exists
 			const titleText = session.title;
 			
 			item.innerHTML = `
@@ -125,7 +123,6 @@ historyButton.addEventListener("click", () => {
 				<div class="session-date">${session.timestamp}</div>
 			`;
 			
-			// Switch chat instance on click
 			item.addEventListener("click", () => {
 				currentSessionId = session.id;
 				saveState();
@@ -141,6 +138,88 @@ historyButton.addEventListener("click", () => {
 
 closeHistory.addEventListener("click", () => historyModal.classList.remove("active"));
 window.addEventListener("click", (e) => { if (e.target === historyModal) historyModal.classList.remove("active"); });
+
+/**
+ * Formats text with hyperlinks - converts URLs and markdown links to clickable HTML
+ */
+function formatTextWithLinks(text) {
+	if (!text) return '';
+	
+	let formattedText = text;
+	
+	// Convert markdown links: [text](url)
+	const markdownLinkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
+	formattedText = formattedText.replace(markdownLinkRegex, (match, linkText, url) => {
+		return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="chat-link">${escapeHtml(linkText)}</a>`;
+	});
+	
+	// Convert plain URLs (http://, https://)
+	const urlRegex = /(https?:\/\/[^\s<>"']+)/g;
+	formattedText = formattedText.replace(urlRegex, (url) => {
+		if (formattedText.includes(`href="${url}"`)) return url;
+		const displayUrl = url.length > 50 ? url.substring(0, 47) + "..." : url;
+		return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="chat-link">${escapeHtml(displayUrl)}</a>`;
+	});
+	
+	// Convert www. URLs (without protocol)
+	const wwwRegex = /(www\.[^\s<>"']+)/g;
+	formattedText = formattedText.replace(wwwRegex, (url) => {
+		if (formattedText.includes(`href="${url}"`)) return url;
+		const fullUrl = "http://" + url;
+		const displayUrl = url.length > 50 ? url.substring(0, 47) + "..." : url;
+		return `<a href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener noreferrer" class="chat-link">${escapeHtml(displayUrl)}</a>`;
+	});
+	
+	// Convert email addresses
+	const emailRegex = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g;
+	formattedText = formattedText.replace(emailRegex, (email) => {
+		return `<a href="mailto:${escapeHtml(email)}" class="chat-link">${escapeHtml(email)}</a>`;
+	});
+	
+	// Preserve line breaks
+	formattedText = formattedText.replace(/\n/g, '<br>');
+	
+	return formattedText;
+}
+
+/**
+ * Adds message to chat UI with hyperlink support
+ */
+function addMessageToChatUi(role, content, isStreaming = false) {
+	const messageEl = document.createElement("div");
+	messageEl.className = `message ${role}-message`;
+	
+	if (role === "assistant") {
+		messageEl.innerHTML = `<div class="message-content"></div>`;
+		const contentDiv = messageEl.querySelector(".message-content");
+		
+		if (isStreaming) {
+			contentDiv.setAttribute('data-raw-text', content);
+			contentDiv.innerHTML = formatTextWithLinks(content);
+		} else {
+			contentDiv.innerHTML = formatTextWithLinks(content);
+		}
+	} else {
+		const formattedContent = escapeHtml(content).replace(/\n/g, '<br>');
+		messageEl.innerHTML = `<div class="message-content">${formattedContent}</div>`;
+	}
+	
+	chatMessages.insertBefore(messageEl, typingIndicator);
+	scrollToBottom();
+	return messageEl;
+}
+
+/**
+ * Updates streaming message content with hyperlinks
+ */
+function updateStreamingMessage(messageEl, content) {
+	const contentDiv = messageEl.querySelector(".message-content");
+	if (contentDiv) {
+		contentDiv.setAttribute('data-raw-text', content);
+		contentDiv.innerHTML = formatTextWithLinks(content);
+		scrollToBottom();
+	}
+}
 
 /**
  * Handles communication with backend and manages history states
@@ -159,11 +238,9 @@ async function sendMessage() {
 	userInput.disabled = true;
 	sendButton.disabled = true;
 
-	// Append layouts
 	addMessageToChatUi("user", message);
 	session.history.push({ role: "user", content: message });
 
-	// Auto update title based on first user message topic
 	if (session.title === "New Chat Session" || session.history.length <= 3) {
 		session.title = message.length > 30 ? message.substring(0, 30) + "..." : message;
 	}
@@ -175,7 +252,7 @@ async function sendMessage() {
 	scrollToBottom();
 
 	let responseText = "";
-	let assistantTextEl = null;
+	let assistantMessageEl = null;
 
 	try {
 		const response = await fetch("/api/chat", {
@@ -189,11 +266,11 @@ async function sendMessage() {
 
 		typingIndicator.classList.remove("visible");
 
-		const assistantMessageEl = document.createElement("div");
+		assistantMessageEl = document.createElement("div");
 		assistantMessageEl.className = "message assistant-message";
-		assistantMessageEl.innerHTML = "<p></p>";
+		assistantMessageEl.innerHTML = `<div class="message-content"></div>`;
 		chatMessages.appendChild(assistantMessageEl);
-		assistantTextEl = assistantMessageEl.querySelector("p");
+		scrollToBottom();
 
 		const reader = response.body.getReader();
 		const decoder = new TextDecoder();
@@ -207,8 +284,7 @@ async function sendMessage() {
 					const content = jsonData.response || jsonData.choices?.[0]?.delta?.content || "";
 					if (content) {
 						responseText += content;
-						assistantTextEl.textContent = responseText; 
-						scrollToBottom();
+						updateStreamingMessage(assistantMessageEl, responseText);
 					}
 				} catch (e) {
 					console.error("SSE parse error", e);
@@ -247,15 +323,6 @@ async function sendMessage() {
 	}
 }
 
-function addMessageToChatUi(role, content) {
-	const messageEl = document.createElement("div");
-	messageEl.className = `message ${role}-message`;
-	messageEl.innerHTML = `<p></p>`;
-	messageEl.querySelector("p").textContent = content; 
-	chatMessages.insertBefore(messageEl, typingIndicator);
-	scrollToBottom();
-}
-
 function scrollToBottom() {
 	chatMessages.scrollTop = chatMessages.scrollHeight;
 }
@@ -279,7 +346,12 @@ function consumeSseEvents(buffer) {
 }
 
 function escapeHtml(str) {
-	return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+	if (!str) return '';
+	return str.replace(/&/g, "&amp;")
+			  .replace(/</g, "&lt;")
+			  .replace(/>/g, "&gt;")
+			  .replace(/"/g, "&quot;")
+			  .replace(/'/g, "&#039;");
 }
 
 // App Initialization Cycle Setup
